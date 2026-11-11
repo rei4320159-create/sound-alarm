@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>音検知アラーム</title>
+<style>
+  :root { --bg:#111418; --card:#1c2128; --fg:#e8eaed; --muted:#9aa3ad; --accent:#4f9cf9; --warn:#ff5a5a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width:520px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { font-size:1.3rem; margin:0 0 16px; }
+  .card { background:var(--card); border-radius:14px; padding:16px; margin-bottom:14px; }
+  .meter { position:relative; height:34px; background:#2a313a; border-radius:8px; overflow:hidden; }
+  .bar { position:absolute; inset:0 auto 0 0; width:0; background:var(--accent); transition:width .05s linear; }
+  .bar.over { background:var(--warn); }
+  .th { position:absolute; top:0; bottom:0; width:3px; background:#fff; }
+  .level { font-size:2rem; font-weight:700; margin:10px 0 0; font-variant-numeric:tabular-nums; }
+  label { display:block; margin:12px 0 4px; font-size:.9rem; color:var(--muted); }
+  label b { color:var(--fg); }
+  input[type=range] { width:100%; }
+  select { width:100%; padding:8px; border-radius:8px; background:#2a313a; color:var(--fg); border:none; }
+  .row { display:flex; gap:10px; }
+  button { flex:1; padding:14px; font-size:1rem; font-weight:700; border:none; border-radius:10px; cursor:pointer; color:#fff; background:var(--accent); }
+  button.stop { background:var(--warn); }
+  button.sub { background:#3a434e; }
+  button:disabled { opacity:.4; }
+  .check { display:flex; align-items:center; gap:8px; margin-top:12px; }
+  .status { margin-top:10px; font-size:.9rem; color:var(--muted); }
+  .alert { display:none; position:fixed; inset:0; background:rgba(255,40,40,.92); color:#fff; z-index:10;
+           flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:20px; }
+  .alert.on { display:flex; animation:blink .5s infinite alternate; }
+  .alert h2 { font-size:2.4rem; margin:0; }
+  .alert button { flex:none; background:#fff; color:#c00; padding:18px 40px; font-size:1.2rem; }
+  @keyframes blink { from { background:rgba(255,40,40,.95);} to { background:rgba(120,0,0,.95);} }
+  ul.log { list-style:none; padding:0; margin:8px 0 0; font-size:.85rem; color:var(--muted); max-height:160px; overflow:auto; }
+  .note { font-size:.8rem; color:var(--muted); line-height:1.6; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🔊 音検知アラーム</h1>
+
+  <div class="card">
+    <div class="meter"><div class="bar" id="bar"></div><div class="th" id="thMark"></div></div>
+    <div class="level"><span id="lv">--</span> <small style="font-size:1rem;color:var(--muted)">/ 100</small></div>
+    <div class="status" id="status">「監視開始」を押してマイクを許可してください</div>
+  </div>
+
+  <div class="card">
+    <label>しきい値（これを超えたらアラーム）: <b id="thV">60</b></label>
+    <input type="range" id="th" min="5" max="100" value="60">
+
+    <label>継続時間（この時間以上超え続けたら発動）: <b id="durV">0.2</b> 秒</label>
+    <input type="range" id="dur" min="0" max="3" step="0.1" value="0.2">
+
+    <label>マイク感度（入力の増幅）: <b id="gainV">1.0</b> 倍</label>
+    <input type="range" id="gain" min="1" max="20" step="0.5" value="1">
+
+    <label>アラーム音</label>
+    <select id="tone">
+      <option value="beep">ピピピ（電子音）</option>
+      <option value="siren">サイレン</option>
+      <option value="replay">検知した音を増幅して再生</option>
+    </select>
+
+    <label>アラーム音量: <b id="volV">100</b>%</label>
+    <input type="range" id="vol" min="10" max="100" value="100">
+
+    <div class="check"><input type="checkbox" id="monitor"><span>マイクの音を増幅して常に聞く（イヤホン推奨・ハウリング注意）</span></div>
+    <div class="check"><input type="checkbox" id="autoStop" checked><span>アラームは10秒で自動停止して監視を再開</span></div>
+  </div>
+
+  <div class="card row">
+    <button id="start">監視開始</button>
+    <button id="stop" class="sub" disabled>停止</button>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <b>検知ログ</b><button class="sub" id="test" style="flex:none;padding:8px 14px;font-size:.85rem">アラームテスト</button>
+    </div>
+    <ul class="log" id="log"><li>まだありません</li></ul>
+  </div>
+
+  <p class="note">
+    ・画面を閉じる／別アプリに切り替えると、多くのスマホではマイクが止まります。監視中は画面をつけたまま（充電しながら）使ってください。<br>
+    ・レベルは0〜100の相対値です（正確なdBではありません）。静かな状態で数値を見て、それより少し上にしきい値を設定するのがおすすめです。<br>
+    ・音声はどこにも送信されず、この端末内だけで処理されます。
+  </p>
+</main>
+
+<div class="alert" id="alert">
+  <h2>🚨 音を検知</h2>
+  <div id="alertInfo"></div>
+  <button id="dismiss">止める</button>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let ctx, stream, src, gainNode, analyser, monitorGain, rafId, data;
+let overSince = null, alarming = false, alarmNodes = [], alarmTimer = null, wakeLock = null;
+let ring = [], ringLen = 0; // recent audio for replay
+let recorderNode;
+
+const ui = { th:$('th'), dur:$('dur'), gain:$('gain'), vol:$('vol'), tone:$('tone') };
+function syncLabels() {
+  $('thV').textContent = ui.th.value;
+  $('durV').textContent = (+ui.dur.value).toFixed(1);
+  $('gainV').textContent = (+ui.gain.value).toFixed(1);
+  $('volV').textContent = ui.vol.value;
+  $('thMark').style.left = ui.th.value + '%';
+  if (gainNode) gainNode.gain.value = +ui.gain.value;
+}
+Object.values(ui).forEach(el => el.addEventListener('input', syncLabels));
+try {
+  const saved = JSON.parse(localStorage.getItem('soundAlarm') || '{}');
+  for (const k in saved) if (ui[k]) ui[k].value = saved[k];
+} catch(e) {}
+function save() { try { const o={}; for (const k in ui) o[k]=ui[k].value; localStorage.setItem('soundAlarm', JSON.stringify(o)); } catch(e){} }
+Object.values(ui).forEach(el => el.addEventListener('change', save));
+syncLabels();
+
+$('monitor').addEventListener('change', () => { if (monitorGain) monitorGain.gain.value = $('monitor').checked ? 1 : 0; });
+
+async function start() {
+  await unlockAudio();
+  if (!navigator.mediaDevices?.getUserMedia) {
+    $('status').textContent = 'このブラウザ／開き方ではマイクが使えません。ChromeかSafariで直接開いてください。';
+    return;
+  }
+  try {
+    ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+    await ctx.resume();
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false } });
+  } catch (e) {
+    $('status').textContent = 'マイクを使えませんでした：' + e.message;
+    return;
+  }
+  src = ctx.createMediaStreamSource(stream);
+  gainNode = ctx.createGain(); gainNode.gain.value = +ui.gain.value;
+  analyser = ctx.createAnalyser(); analyser.fftSize = 2048;
+  monitorGain = ctx.createGain(); monitorGain.gain.value = $('monitor').checked ? 1 : 0;
+  src.connect(gainNode); gainNode.connect(analyser); gainNode.connect(monitorGain); monitorGain.connect(ctx.destination);
+
+  // keep last ~3s of audio for "replay"
+  ringLen = Math.floor(ctx.sampleRate * 3); ring = new Float32Array(ringLen); let pos = 0;
+  recorderNode = ctx.createScriptProcessor(4096, 1, 1);
+  recorderNode.onaudioprocess = e => {
+    const inp = e.inputBuffer.getChannelData(0);
+    for (let i=0;i<inp.length;i++){ ring[pos]=inp[i]; pos=(pos+1)%ringLen; }
+    ring.pos = pos;
+    e.outputBuffer.getChannelData(0).fill(0);
+  };
+  gainNode.connect(recorderNode); recorderNode.connect(ctx.destination);
+
+  data = new Float32Array(analyser.fftSize);
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch(e) {}
+  $('start').disabled = true; $('stop').disabled = false;
+  $('status').textContent = '監視中…';
+  loop();
+}
+
+function stop() {
+  cancelAnimationFrame(rafId);
+  stopAlarm();
+  stream?.getTracks().forEach(t => t.stop());
+  try { src.disconnect(); recorderNode.disconnect(); monitorGain.disconnect(); } catch(e){}
+  try { wakeLock?.release(); } catch(e){}
+  $('start').disabled = false; $('stop').disabled = true;
+  $('status').textContent = '停止中'; $('lv').textContent='--'; $('bar').style.width='0';
+}
+
+function level() {
+  analyser.getFloatTimeDomainData(data);
+  let sum=0; for (let i=0;i<data.length;i++) sum+=data[i]*data[i];
+  const rms = Math.sqrt(sum/data.length);
+  const db = 20*Math.log10(rms + 1e-8);        // -160..0 dBFS
+  return Math.max(0, Math.min(100, (db + 80) * 1.25)); // -80dBFS→0, 0dBFS→100
+}
+
+let smooth = 0;
+function loop() {
+  const l = level();
+  smooth = Math.max(l, smooth * 0.85 + l * 0.15);
+  $('lv').textContent = Math.round(smooth);
+  $('bar').style.width = smooth + '%';
+  const over = l >= +ui.th.value;
+  $('bar').classList.toggle('over', over);
+  const now = performance.now();
+  if (over && !alarming) {
+    if (overSince === null) overSince = now;
+    if ((now - overSince)/1000 >= +ui.dur.value) trigger(Math.round(l));
+  } else if (!over) overSince = null;
+  rafId = requestAnimationFrame(loop);
+}
+
+function trigger(l) {
+  alarming = true; overSince = null;
+  const t = new Date().toLocaleTimeString('ja-JP');
+  const log = $('log'); if (log.firstChild?.textContent==='まだありません') log.innerHTML='';
+  const li = document.createElement('li'); li.textContent = `${t}　レベル ${l}`; log.prepend(li);
+  $('alertInfo').textContent = `${t}　レベル ${l}`;
+  $('alert').classList.add('on');
+  navigator.vibrate?.([400,200,400,200,400]);
+  playAlarm();
+  if ($('autoStop').checked) alarmTimer = setTimeout(stopAlarm, 10000);
+}
+
+// ---- アラームは <audio> 要素で鳴らす（iPhoneのマナーモードやブラウザ制限でも鳴りやすい）----
+const player = new Audio(); player.loop = true; player.preload = 'auto';
+let unlocked = false;
+const SR = 22050;
+function wavURL(samples, sr) {
+  const n = samples.length, buf = new ArrayBuffer(44 + n*2), v = new DataView(buf);
+  const w = (o,s) => { for (let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
+  w(0,'RIFF'); v.setUint32(4,36+n*2,true); w(8,'WAVE'); w(12,'fmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,sr,true); v.setUint32(28,sr*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
+  w(36,'data'); v.setUint32(40,n*2,true);
+  for (let i=0;i<n;i++){ const s=Math.max(-1,Math.min(1,samples[i])); v.setInt16(44+i*2, s*32767, true); }
+  return URL.createObjectURL(new Blob([buf], {type:'audio/wav'}));
+}
+function makeTone(type) {
+  const len = SR * (type==='beep' ? 0.5 : 1.0), s = new Float32Array(len); let ph = 0;
+  for (let i=0;i<len;i++) {
+    const t = i/SR; let f, on = 1;
+    if (type==='beep') { f = 2000; on = (t<0.12 || (t>=0.18 && t<0.30)) ? 1 : 0; }
+    else { f = t<0.5 ? 700 + 1600*t : 1500 - 1600*(t-0.5); }
+    ph += 2*Math.PI*f/SR;
+    s[i] = on * (Math.sin(ph) >= 0 ? 0.9 : -0.9);   // 矩形波で大きく
+  }
+  return wavURL(s, SR);
+}
+const tones = { beep: makeTone('beep'), siren: makeTone('siren') };
+const SILENT = wavURL(new Float32Array(SR/10), SR);
+
+// ボタンを押した瞬間に一度再生して「音の許可」を取っておく
+async function unlockAudio() {
+  if (unlocked) return;
+  try { player.src = SILENT; player.volume = 0.01; await player.play(); player.pause(); unlocked = true; }
+  catch(e) { $('status').textContent = '音の再生が許可されませんでした：' + e.message; }
+}
+
+function playAlarm() {
+  const type = ui.tone.value;
+  let url = tones[type] || tones.beep;
+  if (type === 'replay' && ring.length > 1 && ctx) {
+    const sr = ctx.sampleRate, ch = new Float32Array(ringLen); let peak = 0;
+    for (let i=0;i<ringLen;i++){ const v=ring[(ring.pos+i)%ringLen]; ch[i]=v; peak=Math.max(peak,Math.abs(v)); }
+    const amp = peak>0 ? Math.min(0.95/peak, 50) : 1;   // 正規化＝増幅
+    for (let i=0;i<ringLen;i++) ch[i]*=amp;
+    url = wavURL(ch, sr);
+  }
+  player.src = url; player.volume = ui.vol.value/100; player.currentTime = 0;
+  player.play().catch(e => { $('alertInfo').textContent += '（音を鳴らせませんでした：' + e.message + '）'; });
+}
+
+function stopAlarm() {
+  clearTimeout(alarmTimer);
+  player.pause();
+  alarmNodes = []; alarming = false; overSince = null;
+  $('alert').classList.remove('on');
+  navigator.vibrate?.(0);
+}
+
+$('start').onclick = start;
+$('stop').onclick = stop;
+$('dismiss').onclick = stopAlarm;
+$('test').onclick = async () => {
+  await unlockAudio();
+  trigger('テスト');
+};
+</script>
+</body>
+</html>
