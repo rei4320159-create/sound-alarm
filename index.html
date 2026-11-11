@@ -39,7 +39,7 @@
 </head>
 <body>
 <main>
-  <h1>🔊 音検知アラーム</h1>
+  <h1>🔊 音検知アラーム <small style="font-size:.7rem;color:#9aa3ad">v3</small></h1>
 
   <div class="card">
     <div class="meter"><div class="bar" id="bar"></div><div class="th" id="thMark"></div></div>
@@ -81,6 +81,7 @@
       <b>検知ログ</b><button class="sub" id="test" style="flex:none;padding:8px 14px;font-size:.85rem">アラームテスト</button>
     </div>
     <ul class="log" id="log"><li>まだありません</li></ul>
+    <pre id="diag" style="white-space:pre-wrap;font-size:.8rem;color:#ffd166;margin:8px 0 0"></pre>
   </div>
 
   <p class="note">
@@ -124,6 +125,8 @@ syncLabels();
 $('monitor').addEventListener('change', () => { if (monitorGain) monitorGain.gain.value = $('monitor').checked ? 1 : 0; });
 
 async function start() {
+  actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+  try { await actx.resume(); } catch(e) {}
   await unlockAudio();
   if (!navigator.mediaDevices?.getUserMedia) {
     $('status').textContent = 'このブラウザ／開き方ではマイクが使えません。ChromeかSafariで直接開いてください。';
@@ -253,12 +256,29 @@ function playAlarm() {
     url = wavURL(ch, sr);
   }
   player.src = url; player.volume = ui.vol.value/100; player.currentTime = 0;
-  player.play().catch(e => { $('alertInfo').textContent += '（音を鳴らせませんでした：' + e.message + '）'; });
+  player.play()
+    .then(() => diag('方式A（audio要素）: 再生OK'))
+    .catch(e => diag('方式A（audio要素）: 失敗 ' + e.name + ' ' + e.message));
+  // 方式B: Web Audio でも同時に鳴らす（どちらかが鳴ればOK）
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    actx.resume().then(() => {
+      const osc = actx.createOscillator(), g = actx.createGain();
+      osc.type = 'square'; osc.frequency.value = 1800; g.gain.value = 0.5 * ui.vol.value/100;
+      const t0 = actx.currentTime;
+      for (let i=0;i<40;i++){ g.gain.setValueAtTime(0.5*ui.vol.value/100, t0+i*0.5); g.gain.setValueAtTime(0, t0+i*0.5+0.25); }
+      osc.connect(g); g.connect(actx.destination); osc.start(); alarmNodes.push(osc);
+      diag('方式B（Web Audio）: ' + actx.state);
+    });
+  } catch(e) { diag('方式B（Web Audio）: 失敗 ' + e.message); }
 }
+let actx;
+function diag(msg) { const d = $('diag'); d.textContent = (d.textContent ? d.textContent + '\n' : '') + msg; }
 
 function stopAlarm() {
   clearTimeout(alarmTimer);
   player.pause();
+  alarmNodes.forEach(n => { try { n.stop(); n.disconnect(); } catch(e){} });
   alarmNodes = []; alarming = false; overSince = null;
   $('alert').classList.remove('on');
   navigator.vibrate?.(0);
@@ -268,6 +288,9 @@ $('start').onclick = start;
 $('stop').onclick = stop;
 $('dismiss').onclick = stopAlarm;
 $('test').onclick = async () => {
+  $('diag').textContent = '';
+  actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+  try { await actx.resume(); } catch(e) {}
   await unlockAudio();
   trigger('テスト');
 };
